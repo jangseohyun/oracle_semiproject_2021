@@ -737,6 +737,7 @@ IS
     V_COUNT_REG         NUMBER;                 -- 예외처리용 수강신청코드2
     V_COUNT_OS          NUMBER;                 -- 예외처리용 개설과목코드2
     V_COUNT_QT          NUMBER;
+    V_SC_TOT            NUMBER;
     INCORRECT_ERROR     EXCEPTION;
     DUPLICATE_ERROR     EXCEPTION;
     TOTAL_SC_ERROR      EXCEPTION;
@@ -754,10 +755,6 @@ BEGIN
     FROM TBL_SC
     WHERE REG_CD = V_REG_CD;
     
-    SELECT COUNT(*) INTO V_COUNT_OS
-    FROM TBL_SC
-    WHERE OS_CD = V_OS_CD;
-    
     -- 중도탈락한 학생일 때
     SELECT COUNT(*) INTO V_COUNT_QT
     FROM TBL_QT
@@ -767,10 +764,9 @@ BEGIN
         THEN RAISE QUIT_STUDENT_ERROR;
     END IF;
     
+    IF ((V_COUNT_RCD = 1) AND (V_COUNT_OCD = 1))
+        THEN V_SC_CD := 'SC' || LPAD(SEQ_SC_CODE.NEXTVAL,3,'0'); 
     -- 정확하지 않은 코드 입력했을 때 
-    IF (V_COUNT_RCD = 1) AND (V_COUNT_OCD = 1)
-        THEN
-        V_SC_CD := 'SC' || LPAD(SEQ_SC_CODE.NEXTVAL,3,'0'); 
     ELSE RAISE INCORRECT_ERROR;
     END IF;
     
@@ -778,10 +774,6 @@ BEGIN
     IF V_COUNT_REG > 0
         THEN RAISE DUPLICATE_ERROR;
     END IF;
-        
-    IF V_COUNT_OS > 0
-        THEN RAISE DUPLICATE_ERROR;
-    END IF;    
     
     IF (V_SC_AT + V_SC_WT + V_SC_PT) > 100
             THEN RAISE TOTAL_SC_ERROR;
@@ -791,7 +783,8 @@ BEGIN
     INSERT INTO TBL_SC(SC_CD, REG_CD, OS_CD, SC_AT, SC_WT, SC_PT)
     VALUES (V_SC_CD, V_REG_CD, V_OS_CD, V_SC_AT, V_SC_WT, V_SC_PT);
         
-    DBMS_OUTPUT.PUT_LINE('총점 : ' || V_SC_AT + V_SC_WT + V_SC_PT);    
+    V_SC_TOT := V_SC_AT + V_SC_WT + V_SC_PT;
+    DBMS_OUTPUT.PUT_LINE('총점 : ' || V_SC_TOT);    
     
     COMMIT;
     
@@ -978,14 +971,30 @@ RG004	ST002	A_FS001	21/01/31
 */
 
 EXEC PRC_SC_INSERT('RG001', 'EJ001', 30, 16, 46);
+--==>> 총점 : 92
 EXEC PRC_SC_INSERT('RG002', 'EJ001', 28, 18, 50);
+--==>> 총점 : 96
 EXEC PRC_SC_INSERT('RG003', 'EJ001', 28, 16, 42);
+--==>> 총점 : 86
 EXEC PRC_SC_INSERT('RG004', 'EJ001', 30, 20, 48);
+--==>> 총점 : 98
 
 SELECT *
-FROM TBL_SC;
+FROM TBL_SC
+ORDER BY 1;
+/*
+SC_CD	REG_CD	OS_CD	SC_AT	SC_WT	SC_PT
+SC001	RG001	EJ001	30	    16	    46
+SC002	RG002	EJ001	28	    18	    50
+SC003	RG003	EJ001	28	    16	    42
+SC004	RG004	EJ001	30	    20	    48
+*/
 
 EXEC PRC_QUIT_INSERT('RG004','21/04/01');
 
 SELECT *
 FROM TBL_QT;
+/*
+QT_CD	REG_CD	QT_DT
+Q001	RG004	21/04/16
+*/
