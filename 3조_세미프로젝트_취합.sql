@@ -248,16 +248,43 @@ IS
     -- 변수 선언
     VPR_ID  TBL_PR.PR_ID%TYPE;
     VPR_PW  TBL_PR.PR_PW%TYPE;
-BEGIN
-    -- VPR_PW 연산 (교수 비밀번호)
-    VPR_PW := SUBSTR(VPR_SSN,8);
     
-    -- VPR_ID 연산 (교수ID)
-    VPR_ID := 'PR' || LPAD(SEQ_PRCODE.NEXTVAL,3,'0');     
+    -- 주민번호 중복 예외 
+    PR_SSN_ERROR EXCEPTION;
+    VCOUNT  NUMBER;
+    
+BEGIN
+    -- 동일한 주민번호가 있는지 체크
+    SELECT COUNT(*) INTO VCOUNT
+    FROM TBL_PR
+    WHERE PR_SSN = VPR_SSN;
+    
+    -- 동일한 주민번호가 없으면 INSERT 
+    IF (VCOUNT =1)
+        THEN 
+            RAISE PR_SSN_ERROR;
+    ELSE 
+        -- VPR_PW 연산 (교수 비밀번호)
+        VPR_PW := SUBSTR(VPR_SSN,8);
+        
+        -- VPR_ID 연산 (교수ID)
+        VPR_ID := 'PR' || LPAD(SEQ_PRCODE.NEXTVAL,3,'0');      
 
-    -- 교수 정보 INSERT 쿼리문
-    INSERT INTO TBL_PR(PR_ID, PR_SSN, PR_FN, PR_LN, PR_PW, PR_DT)
+        -- 교수 정보 INSERT 쿼리문
+        INSERT INTO TBL_PR(PR_ID, PR_SSN, PR_FN, PR_LN, PR_PW, PR_DT)
         VALUES(VPR_ID, VPR_SSN, VPR_FN, VPR_LN, VPR_PW, VPR_DT);
+        
+    END IF;
+    
+    --커밋
+    COMMIT;
+    
+    --예외처리
+    EXCEPTION
+        WHEN PR_SSN_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20001,'이미 존재하는 데이터입니다.');
+            ROLLBACK;
+        WHEN OTHERS THEN ROLLBACK;
 END;
 --==>> Procedure PRC_PR_INSERT이(가) 컴파일되었습니다.
 
@@ -998,3 +1025,1062 @@ FROM TBL_QT;
 QT_CD	REG_CD	QT_DT
 Q001	RG004	21/04/16
 */
+
+
+
+--④ 프로시저 생성--------------------------------------------------------------
+
+
+--○ 교수 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_PR_UPDATE
+( VPR_ID    IN TBL_PR.PR_ID%TYPE
+, VPR_SSN   IN TBL_PR.PR_SSN%TYPE
+, VPR_FN    IN TBL_PR.PR_FN%TYPE
+, VPR_LN    IN TBL_PR.PR_LN%TYPE
+, VPR_DT    IN TBL_PR.PR_DT%TYPE
+)
+IS
+    PR_SSN_ERROR EXCEPTION;     -- 주민번호가 다른 주번과 겹치면 예외처리
+    VCOUNT NUMBER;
+    PR_DATE_ERROR   EXCEPTION;  -- DT가 오늘보다 미래이면 예외처리
+    
+BEGIN
+    -- 동일한 주민번호가 있는지 체크
+    SELECT COUNT(*) INTO VCOUNT
+    FROM TBL_PR
+    WHERE PR_SSN = VPR_SSN;
+    
+    --동일한 주민번호가 아니면 UPDATE
+    IF VCOUNT=1
+        THEN RAISE PR_SSN_ERROR;
+        
+    ELSIF ( TO_NUMBER(SYSDATE - VPR_DT)<0 )
+        THEN RAISE PR_DATE_ERROR;
+    
+    ELSE    
+    -- 교수 테이블 수정
+    UPDATE TBL_PR
+    SET PR_SSN = VPR_SSN
+    WHERE PR_ID = VPR_ID;
+    END IF;
+    
+    --커밋
+    COMMIT;
+    
+    -- 예외처리
+    EXCEPTION
+        WHEN PR_SSN_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20001,'이미 존재하는 데이터입니다.');
+            ROLLBACK;
+        WHEN PR_DATE_ERROR 
+            THEN RAISE_APPLICATION_ERROR(-20005, '유효하지 않은 날짜입니다.');
+            ROLLBACK; 
+        WHEN OTHERS THEN ROLLBACK;
+END;
+
+
+--○ 교수 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_PR_DELETE
+( VPR_ID    IN TBL_PR.PR_ID%TYPE
+)
+IS
+    VOS_CD  TBL_OS.OS_CD%TYPE;
+BEGIN
+    -- 자식테이블2인 성적입력 테이블에서 개설과목코드가 VOS_CD인 데이터 모두 삭제
+    -- OC_코드 확인
+    SELECT OS_CD INTO VOS_CD
+    FROM TBL_OS
+    WHERE PR_ID = VPR_ID;  
+   
+    -- 성적 삭제
+    DELETE
+    FROM TBL_SC
+    WHERE OS_CD = VOS_CD;
+    
+    -- 자식테이블인 개설과목 테이블에서 교수아이디가 VPR_ID인 데이터 모두 삭제
+    DELETE
+    FROM TBL_OS
+    WHERE PR_ID = VPR_ID;    
+
+    -- 교수 정보 삭제
+    DELETE
+    FROM TBL_PR
+    WHERE PR_ID = VPR_ID;
+    
+    --커밋
+    COMMIT;
+END;
+
+
+--○ 교수 조회 프로시저 1 (특정 교수의 전체 강의내역 조회)
+
+--뷰 생성
+CREATE OR REPLACE VIEW VIEW_PR
+AS
+SELECT T.*
+FROM
+(
+    SELECT ROWNUM "NUM", PR_ID "PR_ID", PR_SSN "PR_SSN", PR_FN "PR_FN", PR_LN "PR_LN", PR_DT "PR_DT", PR_PW "PR_PW"
+    FROM TBL_PR
+)T;
+
+
+--프로시저 생성
+CREATE OR REPLACE PROCEDURE PRC_PR_LOOKUP
+(
+    V_PR_ID      IN TBL_PR.PR_ID%TYPE   -- 교수아이디
+)
+IS
+    V_SUB_NM     TBL_SUB.SUB_NM%TYPE; -- 배정된 과목명
+    V_SUB_BD     TBL_OS.SUB_BD%TYPE;  -- 과목 시작일
+    V_SUB_ED     TBL_OS.SUB_ED%TYPE;  -- 과목 종료일
+    V_BK_CD      TBL_BK.BK_CD%TYPE;   -- 교재코드
+    V_BK_NM      TBL_BK.BK_NM%TYPE;   -- 교재명
+    V_OC_CD      TBL_OC.OC_CD%TYPE;   -- 강의실코드
+    V_CRS_RM     TBL_OC.CRS_RM%TYPE;  -- 강의실
+    
+    V_OS_CD      TBL_OS.OS_CD%TYPE;
+    V_SUB_CD     TBL_SUB.SUB_CD%TYPE;
+    
+    V_ING        VARCHAR(50);         -- 강의 진행 여부
+    V_DATE1      NUMBER;              -- 날짜 연산 변수
+    V_DATE2      NUMBER;
+    
+    V_NUM        NUMBER;
+    V_ROWNUM     NUMBER;
+    
+BEGIN
+    SELECT MIN(ROWNUM),MAX(ROWNUM) INTO V_NUM,V_ROWNUM
+    FROM TBL_OS
+    WHERE PR_ID = V_PR_ID;
+
+    LOOP    
+        SELECT OS_CD,SUB_BD,SUB_ED,BK_CD,OC_CD INTO V_OS_CD,V_SUB_BD,V_SUB_ED,V_BK_CD,V_OC_CD
+        FROM TBL_OS
+        WHERE PR_ID = V_PR_ID;
+        
+        SELECT SUB_NM INTO V_SUB_NM
+        FROM TBL_SUB
+        WHERE SUB_CD = (SELECT SUB_CD FROM TBL_OS WHERE OS_CD = V_OS_CD);
+        
+        SELECT BK_NM INTO V_BK_NM
+        FROM TBL_BK
+        WHERE BK_CD = V_BK_CD;
+
+        SELECT CRS_RM INTO V_CRS_RM
+        FROM TBL_OC
+        WHERE OC_CD = V_OC_CD;
+        
+        V_DATE1 := TO_NUMBER(SYSDATE - V_SUB_BD);
+        V_DATE2 := TO_NUMBER(SYSDATE - V_SUB_ED);
+        
+        IF (V_DATE1 > 0 AND V_DATE2 < 0) 
+            THEN V_ING := '강의 중';
+        ELSIF (V_DATE1 < 0 AND V_DATE2 < 0) 
+            THEN V_ING := '강의 예정';
+        ELSIF (V_DATE1 > 0 AND V_DATE2 > 0)
+            THEN V_ING := '강의 종료';
+        ELSE V_ING := '확인불가';
+        END IF;
+        
+        -- 교수 정보 출력        
+        DBMS_OUTPUT.PUT_LINE(V_NUM || '.');
+        DBMS_OUTPUT.PUT_LINE('교수ID : ' || V_PR_ID);
+        DBMS_OUTPUT.PUT_LINE('배정된 과목명 : ' || V_OS_CD  );
+        DBMS_OUTPUT.PUT_LINE('과목 기간 : ' || V_SUB_BD || '~' || V_SUB_ED );
+        DBMS_OUTPUT.PUT_LINE('교재명 : ' || V_BK_NM );
+        DBMS_OUTPUT.PUT_LINE('강의실 : ' || V_CRS_RM );
+        DBMS_OUTPUT.PUT_LINE('강의 진행 여부 : ' || V_ING );
+        
+        V_NUM := V_NUM+1;
+        
+        EXIT WHEN V_NUM > V_ROWNUM;
+    END LOOP;
+END;
+
+
+--○ 교수 조회 프로시저 2 (전체 교수의 전체 강의내역 조회)
+
+CREATE OR REPLACE PROCEDURE PRC_PR_LOOKUP_ADMIN
+IS
+    V_PR_ID      TBL_PR.PR_ID%TYPE;
+    V_NUM        NUMBER := 1;
+    V_ROWNUM     NUMBER; 
+BEGIN
+    SELECT MAX(ROWNUM) INTO V_ROWNUM
+    FROM TBL_PR;
+    
+    LOOP
+        SELECT PR_ID INTO V_PR_ID
+        FROM VIEW_PR
+        WHERE NUM = V_NUM;
+        
+        PRC_PR_LOOKUP(V_PR_ID);
+        V_NUM := V_NUM + 1;
+        
+        EXIT WHEN V_NUM > V_ROWNUM;
+    END LOOP;
+END;
+
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 학생 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_ST_UPDATE
+(
+  V_ST_ID   IN TBL_ST.ST_ID%TYPE
+, V_ST_SSN  IN TBL_ST.ST_SSN%TYPE
+, V_ST_FN   IN TBL_ST.ST_FN%TYPE
+, V_ST_LN   IN TBL_ST.ST_LN%TYPE
+, V_ST_DT   IN TBL_ST.ST_DT%TYPE    DEFAULT SYSDATE
+)
+IS
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    UPDATE TBL_ST
+    SET ST_FN = V_ST_FN, ST_LN = V_ST_LN, ST_DT = V_ST_DT
+    WHERE ST_ID = V_ST_ID;
+    
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+       
+    COMMIT;
+    
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002,'입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 학생 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_ST_UPDATE
+(
+  V_ST_ID   IN TBL_ST.ST_ID%TYPE
+, V_ST_SSN  IN TBL_ST.ST_SSN%TYPE
+, V_ST_FN   IN TBL_ST.ST_FN%TYPE
+, V_ST_LN   IN TBL_ST.ST_LN%TYPE
+, V_ST_DT   IN TBL_ST.ST_DT%TYPE    DEFAULT SYSDATE
+)
+IS
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    UPDATE TBL_ST
+    SET ST_FN = V_ST_FN, ST_LN = V_ST_LN, ST_DT = V_ST_DT
+    WHERE ST_ID = V_ST_ID;
+    
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+       
+    COMMIT;
+    
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002,'입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 학생 조회 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_ST_LOOKUP
+(
+    V_ST_ID     IN TBL_ST.ST_ID%TYPE    -- 학생아이디
+)
+IS
+    V_ST_FN       TBL_ST.ST_FN%TYPE;   -- 학생 성
+    V_ST_LN       TBL_ST.ST_LN%TYPE;   -- 학생 이름
+    V_CRS_NM      TBL_CRS.CRS_NM%TYPE; -- 과정명
+    V_SUB_NM      TBL_SUB.SUB_NM%TYPE; -- 과목명
+    V_SC_AT       TBL_SC.SC_AT%TYPE;   -- 출결
+    V_SC_WT       TBL_SC.SC_WT%TYPE;   -- 필기
+    V_SC_PT       TBL_SC.SC_PT%TYPE;   -- 실기
+
+    V_OC_CD       TBL_OC.OC_CD%TYPE;   -- 개설과정코드
+    V_CRS_CD      TBL_CRS.CRS_CD%TYPE;  -- 과정코드
+    V_SUB_CD      TBL_SUB.SUB_CD%TYPE;  -- 과목코드
+    V_REG_CD      TBL_REG.REG_CD%TYPE; -- 수강신청코드
+    
+    V_SC_TOT        NUMBER;             -- 수강과목 총점
+    
+    V_COUNT         NUMBER;
+    V_MINNUM        NUMBER;
+    V_MAXNUM        NUMBER;
+    
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_REG
+    WHERE ST_ID = V_ST_ID;
+    
+    IF (V_COUNT > 0)
+        THEN 
+            -- 학생이 조회되는 최소 번호(ROWNUM)부터 최대 번호값
+            SELECT MIN(ROWNUM),MAX(ROWNUM) INTO V_MINNUM,V_MAXNUM
+            FROM TBL_REG
+            WHERE ST_ID = V_ST_ID;
+        
+            -- 해당 학생이 여러 과목을 들었다면     
+            LOOP
+                --수강신청코드, 개설과정코드
+                SELECT OC_CD, REG_CD INTO V_OC_CD, V_REG_CD
+                FROM TBL_REG
+                WHERE ST_ID = V_ST_ID;
+                
+                -- 학생 이름
+                SELECT ST_FN, ST_LN INTO V_ST_FN, V_ST_LN
+                FROM TBL_ST
+                WHERE ST_ID = V_ST_ID;
+                
+                -- 과정개설 - 개설과정코드 / 수강내역 - 개설과정코드 → 과정코드
+                SELECT CRS_CD INTO V_CRS_CD
+                FROM TBL_OC
+                WHERE OC_CD = V_OC_CD;
+                
+                -- 과정 - 과정코드 / 과정개설 - 과정코드 → 과정명
+                SELECT CRS_NM INTO V_CRS_NM
+                FROM TBL_CRS
+                WHERE CRS_CD = V_CRS_CD;
+                
+                -- 과목개설 - 개설과정코드 / 수강내역 - 개설과정코드 → 과목코드
+                SELECT SUB_CD INTO V_SUB_CD
+                FROM TBL_OS
+                WHERE OC_CD = V_OC_CD;
+                
+                -- 과목 - 과목코드 / 과목개설 - 과목코드 → 과목명
+                SELECT SUB_NM INTO V_SUB_NM
+                FROM TBL_SUB
+                WHERE SUB_CD = V_SUB_CD;
+                
+                -- 성적입력 - 수강신청코드 / 수강내역 - 수강신청코드 → 성적
+                SELECT SC_AT, SC_WT, SC_PT INTO V_SC_AT, V_SC_WT, V_SC_PT
+                FROM TBL_SC
+                WHERE REG_CD = V_REG_CD;
+                
+                V_SC_TOT := (V_SC_AT + V_SC_WT + V_SC_PT);   --총점
+                
+                -- 학생 이름, 과정명, 수강과목, 수강과목 총점
+                -- 학생 정보 출력
+                DBMS_OUTPUT.PUT_LINE(V_MINNUM || '.');
+                DBMS_OUTPUT.PUT_LINE('학생이름 : ' || V_ST_FN || V_ST_LN);
+                DBMS_OUTPUT.PUT_LINE('과정명 : ' || V_CRS_NM);
+                DBMS_OUTPUT.PUT_LINE('수강과목 : ' || V_SUB_NM);
+                DBMS_OUTPUT.PUT_LINE('수강과목 총점 : ' || V_SC_TOT);
+                
+                V_MINNUM := V_MINNUM+1;
+                
+                EXIT WHEN V_MINNUM > V_MAXNUM;
+
+            END LOOP; 
+    ELSE RAISE NONEXIST_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    -- 에러 처리
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '존재하지 않는 데이터입니다.');
+                ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 과정 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_CRS_UPDATE
+( V_CRS_CD    IN  TBL_CRS.CRS_CD%TYPE
+, V_CRS_NM    IN  TBL_CRS.CRS_NM%TYPE
+)
+IS
+    V_CD_ASCII  NUMBER;
+    V_CD_SEQ    VARCHAR2(3);
+    V_CD_NEW    VARCHAR2(6);
+    V_COUNT     NUMBER;
+    
+    CREATE_CODE_ERROR EXCEPTION;
+    NONEXIST_ERROR   EXCEPTION;
+BEGIN
+    --과정명 코드가 존재하는지 확인
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_CRS
+    WHERE CRS_CD = V_CRS_CD;
+    
+    -- 코드가 존재하지 않으면 에러발생
+    IF (V_COUNT = 0)
+        THEN RAISE NONEXIST_ERROR;    
+    END IF;
+    
+    --첫 두 글자가 알파벳 대문자 두 글자인지 확인
+    V_CD_ASCII := TO_NUMBER(ASCII(SUBSTR(V_CRS_NM,1,1))) + TO_NUMBER(ASCII(SUBSTR(V_CRS_NM,2,1)));
+    
+    --시퀀스 번호 추출
+    V_CD_SEQ := SUBSTR(V_CRS_CD,3,3);
+    V_CD_NEW := SUBSTR(V_CRS_NM,1,2) || V_CD_SEQ;
+    
+    IF (V_CD_ASCII >= 130 AND V_CD_ASCII <= 180)
+        THEN
+            UPDATE TBL_CRS
+            SET CRS_NM = V_CRS_NM, CRS_CD = V_CD_NEW
+            WHERE CRS_CD = V_CRS_CD;
+    ELSE
+        RAISE CREATE_CODE_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '존재하지 않는 데이터입니다.');
+                 ROLLBACK;
+        WHEN CREATE_CODE_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20007,'유효하지 않은 과정명입니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 과정 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_CRS_DELETE
+(   V_CRS_CD  IN TBL_CRS.CRS_CD%TYPE
+)
+IS
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    -- 과정코드가 일치할 경우 데이터 삭제
+    DELETE
+    FROM TBL_CRS
+    WHERE CRS_CD = V_CRS_CD;
+    
+    -- 과정코드가 일치하지 않을 경우 실행되는 에러
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    --예외처리
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002,'존재하지 않는 데이터입니다.');
+                ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 과정 및 과목 조회 프로시저
+
+--뷰 생성
+CREATE OR REPLACE VIEW VIEW_OS
+AS
+SELECT T.*
+FROM
+(
+    SELECT ROWNUM "NUM", OS_CD "OS_CD", OC_CD "OC_CD", SUB_CD "SUB_CD", PR_ID "PR_ID"
+          ,BK_CD "BK_CD", RAT_CD "RAT_CD", SUB_BD "SUB_BD", SUB_ED "SUB_ED"
+    FROM TBL_OS
+)T;
+
+--프로시저 생성
+CREATE OR REPLACE PROCEDURE PRC_OS_OC_LOOKUP
+IS
+    V_CRS_NM    TBL_CRS.CRS_NM%TYPE;    --과정명
+    V_CRS_RM    TBL_OC.CRS_RM%TYPE;     --강의실
+    V_SUB_NM    TBL_SUB.SUB_NM%TYPE;    --과목명
+    V_SUB_BD    TBL_OS.SUB_BD%TYPE;     --과목시작
+    V_SUB_ED    TBL_OS.SUB_ED%TYPE;     --과목종료
+    V_BK_NM     TBL_BK.BK_NM%TYPE;      --교재명
+    V_PR_FN     TBL_PR.PR_FN%TYPE;      --교수성
+    V_PR_LN     TBL_PR.PR_LN%TYPE;      --교수이름
+    
+    V_OC_CD     TBL_OS.OC_CD%TYPE;
+    V_SUB_CD    TBL_SUB.SUB_CD%TYPE;
+    V_BK_CD     TBL_BK.BK_CD%TYPE;
+    V_PR_ID     TBL_PR.PR_ID%TYPE;
+    V_NUM       NUMBER := 1;
+    V_ROWNUM    NUMBER;
+BEGIN
+    SELECT MAX(NUM) INTO V_ROWNUM
+    FROM VIEW_OS;
+    
+    LOOP
+        SELECT OC_CD,SUB_CD,BK_CD,PR_ID,SUB_BD,SUB_ED INTO V_OC_CD,V_SUB_CD,V_BK_CD,V_PR_ID,V_SUB_BD,V_SUB_ED
+        FROM VIEW_OS
+        WHERE NUM = V_NUM;
+        
+        SELECT CRS_NM INTO V_CRS_NM
+        FROM TBL_CRS
+        WHERE CRS_CD = (SELECT CRS_CD FROM TBL_OC WHERE OC_CD = V_OC_CD);
+        
+        SELECT CRS_RM INTO V_CRS_RM
+        FROM TBL_OC
+        WHERE OC_CD = V_OC_CD;
+        
+        SELECT SUB_NM INTO V_SUB_NM
+        FROM TBL_SUB
+        WHERE SUB_CD = V_SUB_CD;
+        
+        SELECT BK_NM INTO V_BK_NM
+        FROM TBL_BK
+        WHERE BK_CD = V_BK_CD;
+        
+        SELECT PR_FN,PR_LN INTO V_PR_FN,V_PR_LN
+        FROM TBL_PR
+        WHERE PR_ID = V_PR_ID;
+        
+        DBMS_OUTPUT.PUT_LINE(V_NUM || '.');
+        DBMS_OUTPUT.PUT_LINE('과정명: ' || V_CRS_NM);
+        DBMS_OUTPUT.PUT_LINE('강의실: ' || V_CRS_RM);
+        DBMS_OUTPUT.PUT_LINE('과목명: ' || V_SUB_NM);
+        DBMS_OUTPUT.PUT_LINE('과목기간: ' || V_SUB_BD || ' ~ ' || V_SUB_ED);
+        DBMS_OUTPUT.PUT_LINE('교재명: ' || V_BK_NM);
+        DBMS_OUTPUT.PUT_LINE('교수명: ' || V_PR_FN || ' ' || V_PR_LN);
+        
+        V_NUM := V_NUM+1;
+        
+        EXIT WHEN V_NUM > V_ROWNUM;
+    END LOOP;
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 과목 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_SUB_UPDATE
+(
+    V_SUB_CD    IN  TBL_SUB.SUB_CD%TYPE
+,   V_SUB_NM    IN  TBL_SUB.SUB_NM%TYPE 
+)
+IS
+    V_COUNT             NUMBER;
+    NOT_FOUND_ERROR    EXCEPTION;
+BEGIN
+    --동일한 과목코드이 있는지 체크
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_SUB
+    WHERE SUB_CD = V_SUB_CD;
+    
+    --동일한 과목코드가 있으면 UPDATE
+    IF V_COUNT = 1
+    THEN
+        UPDATE TBL_SUB
+        SET    SUB_NM = V_SUB_NM
+        WHERE  SUB_CD = V_SUB_CD;
+        
+        COMMIT;
+    ELSE
+        RAISE NOT_FOUND_ERROR;
+    END IF;
+    
+    EXCEPTION
+    WHEN NOT_FOUND_ERROR
+        THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+             ROLLBACK;
+    WHEN OTHERS
+        THEN ROLLBACK;
+END;
+
+
+--○ 과목 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_SUB_DELETE
+(
+    V_SUB_CD    IN  TBL_SUB.SUB_CD%TYPE
+)
+IS
+    V_SUB_NM            TBL_SUB.SUB_NM%TYPE;
+    NOT_FOUND_ERROR     EXCEPTION;
+    V_COUNT             NUMBER;
+BEGIN
+    --동일한 과목코드이 있는지 체크
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_SUB
+    WHERE SUB_CD = V_SUB_CD;
+    
+    --동일한 과목코드가 있으면 DELETE
+    IF V_COUNT = 1
+    THEN
+        SELECT SUB_NM INTO V_SUB_NM
+        FROM TBL_SUB
+        WHERE SUB_CD = V_SUB_CD;
+    
+        DELETE
+        FROM TBL_SUB
+        WHERE SUB_CD = V_SUB_CD;
+        
+        COMMIT;
+    ELSE
+        RAISE NOT_FOUND_ERROR;
+    END IF;
+    
+    EXCEPTION
+    WHEN NOT_FOUND_ERROR
+    THEN RAISE_APPLICATION_ERROR(-20006, '입력하신 정보와 일치하는 데이터가 없습니다.');
+         ROLLBACK;
+    WHEN OTHERS
+    THEN ROLLBACK;
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 배점 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_RAT_UPDATE
+( V_RAT_CD    TBL_RAT.RAT_CD%TYPE
+, V_RAT_AT      TBL_RAT.RAT_AT%TYPE
+, V_RAT_WT      TBL_RAT.RAT_WT%TYPE
+, V_RAT_PT      TBL_RAT.RAT_PT%TYPE
+)
+IS
+    V_COUNT_CD          NUMBER;
+    PROPORTION_ERROR    EXCEPTION;
+    NONEXIST_ERROR      EXCEPTION;
+BEGIN
+    SELECT COUNT(*) INTO V_COUNT_CD
+    FROM TBL_RAT
+    WHERE RAT_CD = V_RAT_CD;
+    
+    IF ( (V_RAT_AT + V_RAT_WT + V_RAT_PT) = 100 ) AND (V_COUNT_CD = 1)
+        THEN
+        -- 코드가 일치하면서 총 배점이 100이라면 업데이트
+        UPDATE TBL_RAT
+        SET RAT_AT = V_RAT_AT, RAT_WT = V_RAT_WT, RAT_PT = V_RAT_PT
+        WHERE RAT_CD = V_RAT_CD;
+    -- 총 배점이 100점이상이거나 이하이면 에러발생
+    ELSIF ( ((V_RAT_AT + V_RAT_WT + V_RAT_PT) < 100) OR ((V_RAT_AT + V_RAT_WT + V_RAT_PT) > 100))
+         THEN RAISE PROPORTION_ERROR;
+    ELSIF (V_COUNT_CD = 0)
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+
+    --커밋
+    COMMIT;
+    
+    -- 에러 처리
+    EXCEPTION
+        WHEN PROPORTION_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20006, '총 배점은 100점 만점 기준입니다.');
+                ROLLBACK;
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '존재하지 않는 데이터입니다.');
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 배점 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_RAT_DELETE
+(  V_RAT_CD    TBL_RAT.RAT_CD%TYPE
+)
+IS
+     NONEXIST_ERROR      EXCEPTION;
+BEGIN
+    DELETE
+    FROM TBL_RAT
+    WHERE RAT_CD = V_RAT_CD;
+    
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    -- 에러 처리
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002,'존재하지 않는 데이터입니다.');
+                ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 교재 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_BK_UPDATE
+(
+    V_BK_CD    IN  TBL_BK.BK_CD%TYPE
+,   V_BK_NM    IN  TBL_BK.BK_NM%TYPE 
+)
+IS
+    V_COUNT             NUMBER;
+    NOT_FOUND_ERROR    EXCEPTION;
+BEGIN
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_BK
+    WHERE BK_CD = V_BK_CD;
+    
+    IF V_COUNT = 1
+    THEN
+        UPDATE TBL_BK
+        SET    BK_NM = V_BK_NM
+        WHERE  BK_CD = V_BK_CD;
+    
+        COMMIT;
+    ELSE
+        RAISE NOT_FOUND_ERROR;
+    END IF;
+    
+    EXCEPTION
+        WHEN NOT_FOUND_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 교재 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_BK_DELETE
+(
+    V_BK_CD    IN  TBL_BK.BK_CD%TYPE
+)
+IS
+    NONEXIST_ERROR     EXCEPTION;
+BEGIN
+
+    -- 자식테이블인 과목개설 테이블에서 과목코드가 V_BK_CD인 데이터 모두 삭제
+    DELETE
+    FROM TBL_OS
+    WHERE BK_CD = V_BK_CD;
+
+    -- 교재테이블에서 삭제
+    DELETE
+    FROM TBL_BK
+    WHERE BK_CD = V_BK_CD;
+    
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+        
+    COMMIT;
+    
+    EXCEPTION
+    WHEN NONEXIST_ERROR
+        THEN RAISE_APPLICATION_ERROR(-20002,'입력하신 정보와 일치하는 데이터가 없습니다.');
+             ROLLBACK;
+    WHEN OTHERS
+        THEN ROLLBACK;       
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 과정개설 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_OC_UPDATE
+( VOC_CD    IN TBL_OC.OC_CD%TYPE
+, VCRS_CD   IN TBL_OC.CRS_CD%TYPE
+, VCRS_BD   IN TBL_OC.CRS_BD%TYPE
+, VCRS_ED   IN TBL_OC.CRS_ED%TYPE
+, VCRS_RM   IN TBL_OC.CRS_RM%TYPE
+)
+IS
+    NOT_FOUND_ERROR EXCEPTION;    -- 과정코드 일치X 예외
+    VCOUNT          NUMBER;       -- 과정코드 확인용
+    OC_DATE_ERROR   EXCEPTION;    -- 날짜 관련 예외
+BEGIN
+    -- 동일한 과정코드가 있는지 체크
+    SELECT COUNT(*) INTO VCOUNT
+    FROM TBL_CRS
+    WHERE CRS_CD = VCRS_CD;
+    
+    -- 동일한 과목코드가 있으면 과정개설 수정 UPDATE
+    IF VCOUNT =1 
+        AND (TO_NUMBER(VCRS_ED - VCRS_BD) > 0)
+        THEN
+            UPDATE TBL_OC
+            SET CRS_CD = VCRS_CD
+            , CRS_BD = VCRS_BD
+            , CRS_ED = VCRS_ED
+            , CRS_RM = VCRS_RM
+            WHERE OC_CD = VOC_CD;
+    ELSIF (TO_NUMBER(VCRS_ED - VCRS_BD) < 0)
+        THEN RAISE OC_DATE_ERROR;
+    ELSE RAISE NOT_FOUND_ERROR;
+    END IF;
+        
+    --커밋
+    COMMIT;      
+    
+    EXCEPTION
+        WHEN NOT_FOUND_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+            ROLLBACK;
+        WHEN OC_DATE_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20005, '유효하지 않은 날짜입니다.');
+            ROLLBACK;
+        WHEN OTHERS THEN ROLLBACK;
+END;
+
+
+--○ 과정개설 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_OC_DELETE
+( VOC_CD    IN TBL_OC.OC_CD%TYPE
+)
+IS
+BEGIN
+    DELETE
+    FROM TBL_OC
+    WHERE OC_CD = VOC_CD;
+    
+    -- 커밋
+    COMMIT;       
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 과목개설 수정 프로시저 1 (교수자명)
+
+CREATE OR REPLACE PROCEDURE PRC_OS_UPDATE
+(
+    V_OS_CD IN  TBL_OS.OS_CD%TYPE
+,   V_PR_ID IN  TBL_OS.PR_ID%TYPE
+)
+IS
+    V_COUNT                  NUMBER;    -- 과목개설코드 체크
+    V_COUNT1                 NUMBER;    -- 외래키 교수자아이디 체크
+    NOT_FOUND_ERROR          EXCEPTION; 
+BEGIN
+    --PK 과목개설코드 체크 (일치하는 데이터)
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_OS
+    WHERE OS_CD = V_OS_CD;
+    
+    --FK3 교수아이디 체크
+    SELECT COUNT(*) INTO V_COUNT1
+    FROM TBL_PR
+    WHERE PR_ID = V_PR_ID;
+    
+    IF (V_COUNT = 1) AND (V_COUNT1 = 1)
+    THEN
+        UPDATE TBL_OS
+        SET    PR_ID = V_PR_ID
+        WHERE  OS_CD = V_OS_CD;
+        
+        COMMIT;
+    ELSE
+        RAISE NOT_FOUND_ERROR;
+    END IF; 
+
+    EXCEPTION
+        WHEN NOT_FOUND_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 과목개설 수정 프로시저 2 (전체)
+
+CREATE OR REPLACE PROCEDURE PRC_OS_UPDATE_ALL
+(
+    V_OS_CD     IN  TBL_OS.OS_CD%TYPE   -- 과목개설코드
+,   V_OC_CD     IN  TBL_OS.OC_CD%TYPE   -- 개설과정명
+,   V_SUB_CD    IN  TBL_SUB.SUB_CD%TYPE -- 과목명
+,   V_PR_ID     IN  TBL_PR.PR_ID%TYPE   -- 교수자 명
+,   V_BK_CD     IN  TBL_BK.BK_CD%TYPE   -- 교재명
+,   V_RAT_CD    IN  TBL_RAT.RAT_CD%TYPE -- 배점
+,   V_SUB_BD    IN  TBL_OS.SUB_BD%TYPE  -- 과목시작날짜 (NULL 가능)
+,   V_SUB_ED    IN  TBL_OS.SUB_ED%TYPE  -- 과목종료날짜 (NULL 가능)
+)
+IS
+    NOT_FOUND_ERROR              EXCEPTION;
+    V_COUNT                      NUMBER; -- 개설과목 중복 체크
+    V_COUNT1                     NUMBER; -- FK1 개설과정코드 체크
+    V_COUNT2                     NUMBER; -- FK2 과목코드 체크  
+    V_COUNT3                     NUMBER; -- FK3 교수아이디 체크
+    V_COUNT4                     NUMBER; -- FK4 교재코드 체크
+    V_COUNT5                     NUMBER; -- FK5 배점코드 체크
+BEGIN
+    --PK 과목개설코드 체크 (일치하는 데이터)
+    SELECT COUNT(*) INTO V_COUNT
+    FROM TBL_OS
+    WHERE OS_CD = V_OS_CD;
+    
+    --FK1 개설과정코드 체크
+    SELECT COUNT(*) INTO V_COUNT1
+    FROM TBL_OC
+    WHERE OC_CD = V_OC_CD;
+
+    --FK2 과목코드 체크
+    SELECT COUNT(*) INTO V_COUNT2
+    FROM TBL_SUB
+    WHERE SUB_CD = V_SUB_CD;
+    
+    --FK3 교수아이디 체크
+    SELECT COUNT(*) INTO V_COUNT3
+    FROM TBL_PR
+    WHERE PR_ID = V_PR_ID;
+    
+    --FK4 교재명 체크
+    SELECT COUNT(*) INTO V_COUNT4
+    FROM TBL_BK
+    WHERE BK_CD = V_BK_CD;
+    
+    --FK5 배점코드 체크
+    SELECT COUNT(*) INTO V_COUNT5
+    FROM TBL_RAT
+    WHERE RAT_CD = V_RAT_CD;
+
+    IF ((V_COUNT = 1) AND (V_COUNT1 = 1) AND (V_COUNT2 = 1) 
+        AND (V_COUNT3 = 1) AND (V_COUNT4 = 1) AND (V_COUNT5 = 1))
+    THEN
+        UPDATE TBL_OS
+        SET    OC_CD = V_OC_CD
+            ,  SUB_CD = V_SUB_CD
+            ,  PR_ID = V_PR_ID
+            ,  BK_CD = V_BK_CD
+            ,  RAT_CD = V_RAT_CD
+            ,  SUB_BD = V_SUB_BD
+            ,  SUB_ED = V_SUB_ED
+        WHERE  OS_CD = V_OS_CD;
+        
+        COMMIT;
+    ELSE
+        RAISE NOT_FOUND_ERROR;
+    END IF;
+
+    EXCEPTION
+        WHEN NOT_FOUND_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--○ 과목개설 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_OS_DELETE
+(
+    V_OS_CD IN TBL_OS.OS_CD%TYPE    --개설과목코드
+)
+IS
+    NONEXIST_ERROR     EXCEPTION;
+BEGIN
+    -- 자식테이블인 성적입력 테이블에서 개설과목코드가 V_OS_CD인 데이터 모두 삭제
+    DELETE
+    FROM TBL_SC
+    WHERE OS_CD = V_OS_CD;
+
+    DELETE
+    FROM TBL_OS
+    WHERE OS_CD = V_OS_CD;
+    
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+    
+    COMMIT;
+    
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002,'입력하신 정보와 일치하는 데이터가 없습니다.');
+                 ROLLBACK;
+        WHEN OTHERS
+            THEN ROLLBACK;
+END;
+
+
+--------------------------------------------------------------------------------
+
+
+--○ 수강신청 수정 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_REG_UPDATE
+( V_REG_CD   TBL_REG.REG_CD%TYPE  -- 수강신청코드 
+, V_OC_CD    TBL_OC.OC_CD%TYPE    -- 개설과정코드
+)
+IS 
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    --수강신청코드가 일치할 경우 데이터 수정
+    UPDATE TBL_REG
+    SET OC_CD = V_OC_CD
+    WHERE REG_CD = V_REG_CD;
+    
+    -- 수강신청코드가 일치하지 않았을 시 실행되는 에러
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    --예외처리
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+                ROLLBACK;
+            WHEN OTHERS
+                THEN ROLLBACK;
+END;
+
+
+--○ 수강내역 삭제 프로시저
+
+CREATE OR REPLACE PROCEDURE PRC_REG_DELETE
+( V_REG_CD      TBL_REG.REG_CD%TYPE
+)
+IS
+    NONEXIST_ERROR  EXCEPTION;
+BEGIN
+    -- 수강신청코드가 일치한다면 내역 삭제
+    DELETE
+    FROM TBL_REG
+    WHERE REG_CD = V_REG_CD;
+
+    -- 수강신청코드가 일치하지 않았을 시 실행되는 에러
+    IF SQL%NOTFOUND
+        THEN RAISE NONEXIST_ERROR;
+    END IF;
+    
+    -- 커밋
+    COMMIT;
+    
+    --예외처리
+    EXCEPTION
+        WHEN NONEXIST_ERROR
+            THEN RAISE_APPLICATION_ERROR(-20002, '입력하신 정보와 일치하는 데이터가 없습니다.');
+                ROLLBACK;
+            WHEN OTHERS
+                THEN ROLLBACK;
+END;

@@ -488,15 +488,17 @@ END;
 --------------------------------------------------------------------------------
 
 
---○ 성적 입력 시퀀스 생성
+--○ 성적 입력 프로시저
+
+-- 시퀀스 생성 
 CREATE SEQUENCE SEQ_SC_CODE
 START WITH 1
 INCREMENT BY 1
 NOMAXVALUE
 NOCACHE;
+--==> Sequence SEQ_SC_CODE이(가) 생성되었습니다.
 
-
---○ 성적 입력 프로시저 생성
+-- 프로시저 생성
 CREATE OR REPLACE PROCEDURE PRC_SC_INSERT
 (
     V_REG_CD    IN TBL_REG.REG_CD%TYPE          -- 수강신청 코드 
@@ -512,6 +514,7 @@ IS
     V_COUNT_REG         NUMBER;                 -- 예외처리용 수강신청코드2
     V_COUNT_OS          NUMBER;                 -- 예외처리용 개설과목코드2
     V_COUNT_QT          NUMBER;
+    V_SC_TOT            NUMBER;
     INCORRECT_ERROR     EXCEPTION;
     DUPLICATE_ERROR     EXCEPTION;
     TOTAL_SC_ERROR      EXCEPTION;
@@ -529,11 +532,7 @@ BEGIN
     FROM TBL_SC
     WHERE REG_CD = V_REG_CD;
     
-    SELECT COUNT(*) INTO V_COUNT_OS
-    FROM TBL_SC
-    WHERE OS_CD = V_OS_CD;
-    
-    -- 중도탈락한 학생일 때 (추가)
+    -- 중도탈락한 학생일 때
     SELECT COUNT(*) INTO V_COUNT_QT
     FROM TBL_QT
     WHERE REG_CD = V_REG_CD;
@@ -542,10 +541,9 @@ BEGIN
         THEN RAISE QUIT_STUDENT_ERROR;
     END IF;
     
+    IF ((V_COUNT_RCD = 1) AND (V_COUNT_OCD = 1))
+        THEN V_SC_CD := 'SC' || LPAD(SEQ_SC_CODE.NEXTVAL,3,'0'); 
     -- 정확하지 않은 코드 입력했을 때 
-    IF (V_COUNT_RCD = 1) AND (V_COUNT_OCD = 1)
-        THEN
-        V_SC_CD := 'SC' || LPAD(SEQ_SC_CODE.NEXTVAL,3,'0'); 
     ELSE RAISE INCORRECT_ERROR;
     END IF;
     
@@ -553,10 +551,6 @@ BEGIN
     IF V_COUNT_REG > 0
         THEN RAISE DUPLICATE_ERROR;
     END IF;
-        
-    IF V_COUNT_OS > 0
-        THEN RAISE DUPLICATE_ERROR;
-    END IF;    
     
     IF (V_SC_AT + V_SC_WT + V_SC_PT) > 100
             THEN RAISE TOTAL_SC_ERROR;
@@ -566,7 +560,8 @@ BEGIN
     INSERT INTO TBL_SC(SC_CD, REG_CD, OS_CD, SC_AT, SC_WT, SC_PT)
     VALUES (V_SC_CD, V_REG_CD, V_OS_CD, V_SC_AT, V_SC_WT, V_SC_PT);
         
-    DBMS_OUTPUT.PUT_LINE('총점 : ' || V_SC_AT + V_SC_WT + V_SC_PT);    
+    V_SC_TOT := V_SC_AT + V_SC_WT + V_SC_PT;
+    DBMS_OUTPUT.PUT_LINE('총점 : ' || V_SC_TOT);    
     
     COMMIT;
     
@@ -586,3 +581,4 @@ BEGIN
         WHEN OTHERS
             THEN ROLLBACK;
 END;
+--==> Procedure PRC_SC_INSERT이(가) 컴파일되었습니다.
